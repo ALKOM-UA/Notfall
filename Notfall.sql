@@ -10,6 +10,7 @@
 --_V_7.3	18.12.2017	OK	Added possibility to copy not all blocks and tasks
 --_V_7.4	05.01.2018	OK	Possibility to update parameters of tasks moved from separate script to this one
 --_V_7.5	20.01.2018	OK	Added possibility to create PDFKiller block and task
+--_V_7.6	23.02.2018	OK	Fixed absent '/' in the beginning of kk_lm_task.parameter1, changed update block for @parameter_to_change without sign '=', logic with @days_in_advance starts with 0 value
 --***EndVersion***
  
 declare @mandant_nr int = 3             -- tasks are copied inside one mandant
@@ -43,7 +44,7 @@ declare @done_source_tasks table (id int)						-- table for store source tasks w
 declare @skipped_source_tasks table (id int)					-- table for store source tasks which are skipped because they are inactive or not REP or not automatical or are in the list of tasks which shouldn't be copied
 declare @task_ids_to_skip nvarchar(4000) = NULL
 declare @task_ids_to_skip_table table (id int)
-declare @days_in_advance int = 1    --amount of days, tasks will be created with '#date+1', '#date+2' etc
+declare @days_in_advance int = 0    --amount of days, tasks will be created with '#date+1', '#date+2' etc
 declare @day_number  int            --counter
 declare @add_parameters bit = 0     --if 1 then check and add @parameters_to_add to emergency tasks if it is absent
 declare @parameters_to_add nvarchar(4000) = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>'
@@ -79,14 +80,14 @@ declare @intelli_date  bit = 0	-- if 1 then parameter 'date' would be updated to
 
 set @source_gr_name = 'notfall_test'       -- 'ATS' --'Produktion'
                --OR--
-set @source_task_ids = '54,56'             --'54,56,78'
+set @source_task_ids = '54,30'             --'54,56,78'
 
 ---- general parameters --------------------------------
 set @mandant_nr = 3 
-set @emergency_gr_name = 'okqwe7'          --'Notfall'  --'Système d''urgence' 
+set @emergency_gr_name = 'Système d''urgence'           --'Notfall'  --'Système d''urgence' 
 set @emergency_pc_id = 'notfall'		   --'notfall'  --'secour'
 ---- additional parameters --------------------------------
-set @days_in_advance = 1				 --amount of days, tasks will be created with '#date+1', '#date+2' etc
+set @days_in_advance = 3				 --amount of days, tasks will be created with '#date+1', '#date+2' etc
 --set @block_amount = 1					 --set amount of blocks here if you want copy not all blocks (for example, first 3: Breakfast/Lunch/Dinner) 
 --set @task_ids_to_skip = '4313, 4309'	 --set here id's of tasks which shouldn't be copied, delimiter is comma sign. Use WHERE in cursor to skip tasks by filter [name like '%%']
 set @emergency_file_template = '<@date@>_<@taskname@>_notfall'    --'<@date@>_<@taskname@>_secour'
@@ -100,7 +101,7 @@ set @add_parameters = 1                  --if 1 then check and add @parameters_t
 ---- if @add_parameters = 1 --------------------------------
 	set @parameters_to_add = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>' 
 
-set @change_time = 1  --if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time else time = NULL 
+set @change_time = 0  --if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time else time = NULL 
 ---- if @change_time = 1 --------------------------------
 	set @initial_time = '03:59' --time from which all tasks should be started or time of last start of tasks
 	set @tasks_interval  = 4  --interval between emergency tasks
@@ -113,7 +114,7 @@ set @update_parameters = 1
 	--if parameter to change is like 'mz' and do not have definite value, like 'mz=3' etc., will be changed all items like 'mz%' 
 	--if parameter to change has definite value like 'mz=3' etc., will be changed only items with this value mz=3
 	--in parameter after change type only name to change parameter name, or name = value to change both
-	set @parameters_list = 'datum_from|date; datum=|date; mz=|mealtime; show=1|show=0; daily_mode|daily_mode=0; future_mode|future_mode=1'
+	set @parameters_list = 'datum_from|date; datum|date; mz=|mealtime; show=1|show=0; daily_mode|daily_mode=0; future_mode|future_mode=1'
 
 	set @intelli_date = 1		-- if 1 then parameter 'date' would be updated to 'date=<@date@>' or 'date=<@date+1@>' or 'date=<@date+2@>' etc. accordingly to task name
 
@@ -206,7 +207,7 @@ if @source_task_ids is null
 				end
 	end
 else
-	set @block_amount = (select count (gr_id) from KK_LM_TaskGroup where parent_id=@source_gr_id and gr_id in (select block_id from @source_block_table)) -- only blocks from this group
+	set @block_amount = (select count (gr_id) from KK_LM_TaskGroup where parent_id=@source_gr_id and gr_id in (select block_id from @source_block_table)) --***-- only blocks from this group
 	
 
 --loop for inserting emergency blocks
@@ -297,8 +298,8 @@ BEGIN
 	FETCH NEXT FROM task_insert INTO @cTask_id, @cTask_group_id, @cName, @cType, @cPeriod, @cSchedule, @cTime, @cPc_ids, @cBody, @cParameter1, @cValue1, @cActive, @cFont, @cText_color, @cWorkdir, @cPos, @cShow_message 
 	WHILE @@FETCH_STATUS=0
 	BEGIN
-		set @day_number = 1
-		WHILE @day_number <= (@days_in_advance + 1)
+		set @day_number = 0
+		WHILE @day_number <= @days_in_advance
 		BEGIN 
 			INSERT INTO kk_lm_task
             (task_group_id,
@@ -319,7 +320,7 @@ BEGIN
 			VALUES      
 			(@emergency_block_id,
             (case
-				when @day_number = 1 then @cName  
+				when @day_number = 0 then @cName  
 				else (@cName + ' #date+' + CONVERT(nvarchar(60), @day_number)) 
 			 end),
              @cType,
@@ -413,13 +414,13 @@ IF @update_parameters = 1 or @change_time = 1 or @add_parameters = 1
 			DECLARE task_update CURSOR FOR 
 			SELECT task_id, task_group_id, name, [type], period, schedule, [time], pc_ids, body, parameter1, value1, active, font, text_color, workdir, pos, show_message
 			FROM KK_LM_Task
-			WHERE task_id in (select * from @done_emergency_tasks)
+			WHERE task_id in (select * from @done_emergency_tasks) and name != 'PDF Killer'
 			ORDER BY task_id 
 		else
 			DECLARE task_update CURSOR FOR
 			SELECT task_id, task_group_id, name, [type], period, schedule, [time], pc_ids, body, parameter1, value1, active, font, text_color, workdir, pos, show_message
 			FROM KK_LM_Task
-			WHERE task_id in (select * from @done_emergency_tasks)
+			WHERE task_id in (select * from @done_emergency_tasks) and name != 'PDF Killer'
 			ORDER BY task_id desc
 	
 
@@ -472,7 +473,7 @@ IF @update_parameters = 1 or @change_time = 1 or @add_parameters = 1
 						set @parameter_after_change  = (select top 1 par from @parameters_table where par in (select top 2 par from @parameters_table order by id asc) order by id desc)
 					
 						--searching by temporary table and replacing to new value
-						IF LEN(RIGHT(@parameter_to_change, LEN(@parameter_to_change)-CHARINDEX('=', @parameter_to_change)))= 0  or (select CHARINDEX('=',@parameter_to_change)) = 0
+						IF LEN(RIGHT(@parameter_to_change, LEN(@parameter_to_change)-CHARINDEX('=', @parameter_to_change)))= 0  
 							--@parameter_to_change doesn't have definite value after '=', will be changed all items with value like @parameter_to_change  +'%'
 							begin 
 								if LEN(RIGHT(@parameter_after_change, LEN(@parameter_after_change)-CHARINDEX('=', @parameter_after_change)))= 0
@@ -486,6 +487,21 @@ IF @update_parameters = 1 or @change_time = 1 or @add_parameters = 1
 									--@parameter_after_change has definite value
 									update @Parameters set item=@parameter_after_change  where item like @parameter_to_change +'%'
 							end
+						ELSE
+							IF (select CHARINDEX('=',@parameter_to_change)) = 0
+								--@parameter_to_change doesn't have sign '=' at all, will be changed all items with value like @parameter_to_change  +'=%'
+								begin 
+									if LEN(RIGHT(@parameter_after_change, LEN(@parameter_after_change)-CHARINDEX('=', @parameter_after_change)))= 0
+										--@parameter_after_change has '=' sign but doesn't have definite value after
+										update @Parameters set item=LEFT(@parameter_after_change, CHARINDEX('=', @parameter_after_change) - 1)+(RIGHT (item,LEN(item)+2-CHARINDEX('=', item)))  where item  like @parameter_to_change +'=%'
+									else 
+										if (select CHARINDEX('=',@parameter_after_change)) = 0
+											--@parameter_after_change doesn't have definite value and '=' sign
+											update @Parameters set item=@parameter_after_change+(RIGHT (item,LEN(item)+1-CHARINDEX('=', item)))  where item  like @parameter_to_change +'=%'
+									else 
+										--@parameter_after_change has definite value
+										update @Parameters set item=@parameter_after_change  where item like @parameter_to_change +'=%'
+								end
 						ELSE  
 							-- will be changed only items with this definite value @parameter_to_change
 							begin
@@ -517,7 +533,7 @@ IF @update_parameters = 1 or @change_time = 1 or @add_parameters = 1
 						end
 		
 					--concatenation again from @Parameters table to string and then into KK_LM_Task.Parameter1
-					set @Parameter1 = NULL
+					set @Parameter1 = ''
 					select @Parameter1 = COALESCE(@Parameter1 + ' /', '') + item FROM @Parameters
 					UPDATE KK_LM_Task set parameter1 = @Parameter1 where task_id=@cTask_id
 	
@@ -578,7 +594,9 @@ if @debug_mode = 1
 		delete from KK_LM_TaskGroup where gr_id in (select id from @done_emergency_groups where action_type=1)
 
 		--delete all records about emergence path and template name for groups which were inserted 
-		delete from LMPara where gruppe in (select id from @done_emergency_groups where action_type=1) and application = 'ATS'    
+		delete from LMPara where gruppe in (select id from @done_emergency_groups where action_type=1) and application = 'ATS'  
+		
+		select '@debug_mode = 1, all inserted data is deleted' as Warning  
 	end
 
 --delete from KK_LM_Task where task_id >= 
