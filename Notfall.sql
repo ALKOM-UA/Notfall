@@ -45,7 +45,7 @@ declare @task_ids_to_skip nvarchar(4000) = NULL
 declare @task_ids_to_skip_table table (id int)
 declare @days_in_advance int = 1    --amount of days, tasks will be created with '#date+1', '#date+2' etc
 declare @day_number  int            --counter
-declare @add_parameters bit = 0     --if 1 then add ' /daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>' to emergency tasks
+declare @add_parameters bit = 0     --if 1 then check and add @parameters_to_add to emergency tasks if it is absent
 declare @parameters_to_add nvarchar(4000) = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>'
 declare @update_parameters bit = 0  --if 1 then update parameters of task kk_lm_task.parameter1
 declare @change_time bit = 0		--if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time
@@ -77,20 +77,20 @@ declare @intelli_date  bit = 0	-- if 1 then parameter 'date' would be updated to
 
 ---- please use ONE parameter: set name of source group OR source task id's, @source_task_ids have bigger priority --------
 
-set @source_gr_name = 'notfall_test'        -- 'ATS' --'Produktion'
+set @source_gr_name = 'notfall_test'       -- 'ATS' --'Produktion'
                --OR--
-set @source_task_ids = '54,56'          --'54,56,78'
+set @source_task_ids = '54,56'             --'54,56,78'
 
 ---- general parameters --------------------------------
 set @mandant_nr = 3 
-set @emergency_gr_name = 'okqwe7'          --'Système d'urgence' --'Notfall'
-set @emergency_pc_id = 'notfall'
+set @emergency_gr_name = 'okqwe7'          --'Notfall'  --'Système d''urgence' 
+set @emergency_pc_id = 'notfall'		   --'notfall'  --'secour'
 ---- additional parameters --------------------------------
 set @days_in_advance = 1				 --amount of days, tasks will be created with '#date+1', '#date+2' etc
 --set @block_amount = 1					 --set amount of blocks here if you want copy not all blocks (for example, first 3: Breakfast/Lunch/Dinner) 
 --set @task_ids_to_skip = '4313, 4309'	 --set here id's of tasks which shouldn't be copied, delimiter is comma sign. Use WHERE in cursor to skip tasks by filter [name like '%%']
-set @emergency_file_template = '<@date@>_<@taskname@>_notfall'
-set @emergency_path = 'D:\Logimen\Emergency'				 --'D:\Logimen\Emergency'
+set @emergency_file_template = '<@date@>_<@taskname@>_notfall'    --'<@date@>_<@taskname@>_secour'
+set @emergency_path = 'D:\Logimen\Emergency'					  --'D:\Logimen\Emergency'
 set @emergency_path2 = NULL 
 set @emergency_path3 = NULL
 set @debug_mode = 1						 --if 1 then all inserted tasks and groups will be deleted
@@ -113,7 +113,7 @@ set @update_parameters = 1
 	--if parameter to change is like 'mz' and do not have definite value, like 'mz=3' etc., will be changed all items like 'mz%' 
 	--if parameter to change has definite value like 'mz=3' etc., will be changed only items with this value mz=3
 	--in parameter after change type only name to change parameter name, or name = value to change both
-	set @parameters_list = 'datum_from|date; datum=|date; mz|mealtime; show=1|show=0; daily_mode|daily_mode=0; future_mode|future_mode=1'
+	set @parameters_list = 'datum_from|date; datum=|date; mz=|mealtime; show=1|show=0; daily_mode|daily_mode=0; future_mode|future_mode=1'
 
 	set @intelli_date = 1		-- if 1 then parameter 'date' would be updated to 'date=<@date@>' or 'date=<@date+1@>' or 'date=<@date+2@>' etc. accordingly to task name
 
@@ -297,8 +297,8 @@ BEGIN
 	FETCH NEXT FROM task_insert INTO @cTask_id, @cTask_group_id, @cName, @cType, @cPeriod, @cSchedule, @cTime, @cPc_ids, @cBody, @cParameter1, @cValue1, @cActive, @cFont, @cText_color, @cWorkdir, @cPos, @cShow_message 
 	WHILE @@FETCH_STATUS=0
 	BEGIN
-		set @day_number=1
-		WHILE @day_number<=@days_in_advance 
+		set @day_number = 1
+		WHILE @day_number <= (@days_in_advance + 1)
 		BEGIN 
 			INSERT INTO kk_lm_task
             (task_group_id,
@@ -319,7 +319,7 @@ BEGIN
 			VALUES      
 			(@emergency_block_id,
             (case
-				when @days_in_advance = 1 then @cName  
+				when @day_number = 1 then @cName  
 				else (@cName + ' #date+' + CONVERT(nvarchar(60), @day_number)) 
 			 end),
              @cType,
@@ -339,7 +339,7 @@ BEGIN
 			insert into @done_emergency_tasks select SCOPE_IDENTITY()
 			insert into @done_source_tasks (id) select @cTask_id
 						
-			set @day_number=@day_number+1
+			set @day_number=@day_number + 1
 		END
 		FETCH NEXT FROM task_insert INTO @cTask_id, @cTask_group_id, @cName, @cType, @cPeriod, @cSchedule, @cTime, @cPc_ids, @cBody, @cParameter1, @cValue1, @cActive, @cFont, @cText_color, @cWorkdir, @cPos, @cShow_message 
 	END -- end loop for inserting tasks in one block
