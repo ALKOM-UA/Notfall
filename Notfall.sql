@@ -45,6 +45,7 @@ declare @skipped_source_tasks table (id int)					-- table for store source tasks
 declare @task_ids_to_skip nvarchar(4000) = NULL
 declare @task_ids_to_skip_table table (id int)
 declare @days_in_advance int = 0    --amount of days, tasks will be created with '#date+1', '#date+2' etc
+declare @not_create_for_today int = 0    --if 1 then not create task for today (<@date@>), only for @days_in_advance
 declare @day_number  int            --counter
 declare @add_parameters bit = 0     --if 1 then check and add @parameters_to_add to emergency tasks if it is absent
 declare @parameters_to_add nvarchar(4000) = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>'
@@ -80,32 +81,33 @@ declare @intelli_date  bit = 0	-- if 1 then parameter 'date' would be updated to
 
 set @source_gr_name = 'notfall_test'       -- 'ATS' --'Produktion'
                --OR--
-set @source_task_ids = '54,30'             --'54,56,78'
+set @source_task_ids = '54,30,25,31'        --'54,56,78' '54,30,25,31'     
 
 ---- general parameters --------------------------------
 set @mandant_nr = 3 
 set @emergency_gr_name = 'Système d''urgence'           --'Notfall'  --'Système d''urgence' 
-set @emergency_pc_id = 'notfall'		   --'notfall'  --'secour'
+set @emergency_pc_id = 'notfall'						--'notfall'  --'secour'
 ---- additional parameters --------------------------------
-set @days_in_advance = 3				 --amount of days, tasks will be created with '#date+1', '#date+2' etc
+set @days_in_advance = 0				 --amount of days, tasks will be created with '#date+1', '#date+2' etc
+set @not_create_for_today = 1			 --if 1 then not create task for today (<@date@>), only for @days_in_advance
 --set @block_amount = 1					 --set amount of blocks here if you want copy not all blocks (for example, first 3: Breakfast/Lunch/Dinner) 
 --set @task_ids_to_skip = '4313, 4309'	 --set here id's of tasks which shouldn't be copied, delimiter is comma sign. Use WHERE in cursor to skip tasks by filter [name like '%%']
-set @emergency_file_template = '<@date@>_<@taskname@>_notfall'    --'<@date@>_<@taskname@>_secour'
+set @emergency_file_template = '<@date@>_<@taskname@>_notfall'    --'<@date@>_<@taskname@>_notfall'   --'<@date@>_<@taskname@>_secour'
 set @emergency_path = 'D:\Logimen\Emergency'					  --'D:\Logimen\Emergency'
 set @emergency_path2 = NULL 
 set @emergency_path3 = NULL
 set @debug_mode = 1						 --if 1 then all inserted tasks and groups will be deleted
-set @create_PDFKiller = 1				 --if 1 then insert PDF Killer task in separate block
+set @create_PDFKiller = 0				 --if 1 then insert PDF Killer task in separate block
 			
 set @add_parameters = 1                  --if 1 then check and add @parameters_to_add to emergency tasks if it is absent
 ---- if @add_parameters = 1 --------------------------------
 	set @parameters_to_add = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>' 
 
-set @change_time = 0  --if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time else time = NULL 
+set @change_time = 0					 --if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time else time = NULL 
 ---- if @change_time = 1 --------------------------------
-	set @initial_time = '03:59' --time from which all tasks should be started or time of last start of tasks
-	set @tasks_interval  = 4  --interval between emergency tasks
-	set @reverse_time_direction = 0   -- if 0 then @initial_time is time of start first task else @initial_time is time of start last task
+	set @initial_time = '03:59'			 --time from which all tasks should be started or time of last start of tasks
+	set @tasks_interval  = 4			 --interval between emergency tasks
+	set @reverse_time_direction = 0      --if 0 then @initial_time is time of start first task else @initial_time is time of start last task
 
 set @update_parameters = 1 
 ---- if @@update_parameters = 1 --------------------------------
@@ -298,7 +300,10 @@ BEGIN
 	FETCH NEXT FROM task_insert INTO @cTask_id, @cTask_group_id, @cName, @cType, @cPeriod, @cSchedule, @cTime, @cPc_ids, @cBody, @cParameter1, @cValue1, @cActive, @cFont, @cText_color, @cWorkdir, @cPos, @cShow_message 
 	WHILE @@FETCH_STATUS=0
 	BEGIN
-		set @day_number = 0
+		if @not_create_for_today = 1 
+			set @day_number = 1
+		else set @day_number = 0
+
 		WHILE @day_number <= @days_in_advance
 		BEGIN 
 			INSERT INTO kk_lm_task
@@ -351,7 +356,10 @@ BEGIN
 		insert into @skipped_source_tasks (id) select task_id from KK_LM_Task where task_group_id=@source_block_id and task_id not in (select * from @done_source_tasks) --all tasks which not in cursor
 
 	insert into @done_source_blocks (id) select @source_block_id
-	
+
+	if (select count (*)  from KK_LM_Task where task_group_id = @emergency_block_id and task_id in (select * from @done_emergency_tasks)) = 0
+	select 'No tasks were inserted in block ''' + @emergency_block_name + ''''  as 'Warning'
+
 	set @block_number=@block_number+1
 
 END -- end loop for inserting emergency blocks
@@ -559,7 +567,7 @@ else
 	begin 
 		if (select count (*) from @skipped_source_tasks) > 0
 			select 'There is an error, all tasks were skipped'  as Result
-		else (select 'There is an error, no tasks in selected source group ''' + @source_gr_name + '''' as Result)
+		else (select 'There is an error, no tasks for copying in selected source group ''' + @source_gr_name + '''' as Result)
 	end
 else	
 	select 'Emergency tasks are created successfully'  as Result
@@ -569,7 +577,9 @@ else
 
 --select of emergency group and blocks which were created or which contain inserted emergency tasks
 if (select count (id) from @done_emergency_groups) > 0
-	select 'inserted emergency group'  as ' ', * from KK_LM_TaskGroup where gr_id in (select id from  @done_emergency_groups where action_type=1) 
+	select 'inserted emergency group'  as ' ', * from KK_LM_TaskGroup where gr_id in (select id from  @done_emergency_groups where action_type=1)  and  parent_id is null
+	union all
+	select 'inserted emergency block'  as ' ', * from KK_LM_TaskGroup where  gr_id in (select id from  @done_emergency_groups where action_type=1) and parent_id is not null 
 	union all
 	select 'used emergency group'  as ' ', * from KK_LM_TaskGroup where gr_id in (select id from  @done_emergency_groups where action_type=2) 
 	order by gr_id
@@ -585,6 +595,7 @@ if (select count (*) from @skipped_source_tasks) > 0
 else if @error != NULL select 'No skipped source tasks' as ' '
 
 
+
 ------------------------- DEBUG --------------------------------------------------------------------------------
 
 if @debug_mode = 1 
@@ -595,7 +606,8 @@ if @debug_mode = 1
 
 		--delete all records about emergence path and template name for groups which were inserted 
 		delete from LMPara where gruppe in (select id from @done_emergency_groups where action_type=1) and application = 'ATS'  
-		
+
+		if @error != 1
 		select '@debug_mode = 1, all inserted data is deleted' as Warning  
 	end
 
