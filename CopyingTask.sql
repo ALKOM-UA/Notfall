@@ -9,10 +9,10 @@
 
 declare @tasks_list varchar(max)								--list of task id's to copy
 declare @task_ids_table table (nr int identity, task_id int)	--id's of tasks parsed from string
-declare @count int												--amount of copies of every task
+declare @count int	= 1											--amount of copies of every task
 declare @task_group_id int										--group of task for copying
 declare @init_pos int											--position of task after which should be inserted tasks from the @tasks_list
-declare @task_id int											--task for copying
+declare @task_id int											--task for copying, cursor variable
 declare @i int													--counter				
 
 
@@ -21,7 +21,7 @@ declare @i int													--counter
 ---------------------------------------------------------------------------------------------------------------------------------
 
 set @tasks_list = '5623,5618'								--list of task id's to copy
-set @count = 2												--amount of copies of every task
+set @count = 1												--amount of copies of every task
 				
 ---------------------------------------------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------------------------------------
@@ -31,7 +31,12 @@ set @count = 2												--amount of copies of every task
 insert into @task_ids_table select RTRIM(LTRIM(item)) from SplitStrings_CTE((select @tasks_list), ',')
 
 --for checking the result after 
-select task_group_id gr, pos p, * from KK_LM_Task where task_group_id in (select distinct task_group_id from KK_LM_Task where task_id in (select task_id from @task_ids_table)) order by task_group_id, pos
+select task_group_id gr, pos p, * from KK_LM_Task t
+left join KK_LM_TaskGroup gr on t.task_group_id = gr.gr_id
+left join KK_LM_TaskGroup par on par.gr_id = gr.parent_id
+left join wawi_mandant m on m.mand_nr = gr.mandant_nr
+where task_group_id in (select distinct task_group_id from KK_LM_Task where task_id in (select task_id from @task_ids_table)) 
+order by m.mand_bez, par.gr_pos, gr.gr_pos, t.pos
 
 
 -------------------------------------------------------------------------------------------------------------------
@@ -73,9 +78,12 @@ DEALLOCATE task_copying
 -------------------------------------------------------------------------------------------------------------------
 
 --for checking the result after 
-select task_group_id gr, pos p, * from KK_LM_Task where task_group_id in (select distinct task_group_id from KK_LM_Task where task_id in (select task_id from @task_ids_table)) order by task_group_id, pos
-
-
+select task_group_id gr, pos p, * from KK_LM_Task t
+left join KK_LM_TaskGroup gr on t.task_group_id = gr.gr_id
+left join KK_LM_TaskGroup par on par.gr_id = gr.parent_id
+left join wawi_mandant m on m.mand_nr = gr.mandant_nr
+where task_group_id in (select distinct task_group_id from KK_LM_Task where task_id in (select task_id from @task_ids_table)) 
+order by m.mand_bez, par.gr_pos, gr.gr_pos, t.pos
 
 
 
