@@ -1,8 +1,8 @@
--- =============================================
+-- ===================================================================================
 -- Author:		OK
 -- Create date: 01.10.2017
 -- Description: Script for copying tasks to Notfall block
--- =============================================
+-- ===================================================================================
 --***BeginVersion***
 --_V_7.0	02.10.2017	OK	Created
 --_V_7.1	15.11.2017	OK	Added some checks on correctness of input data, used scope_identity and coalesce after code review with AO
@@ -11,13 +11,15 @@
 --_V_7.4	05.01.2018	OK	Possibility to update parameters of tasks moved from separate script to this one
 --_V_7.5	20.01.2018	OK	Added possibility to create PDFKiller block and task
 --_V_7.6	23.02.2018	OK	Fixed absent '/' in the beginning of kk_lm_task.parameter1, changed update block for @parameter_to_change without sign '=', logic with @days_in_advance starts with 0 value
+--_V_7.7	28.02.2018	OK	Tasks from different groups can be added by using @source_task_ids, not only from one. Logs are changed to select tasks in the same seuence with LMv7
+--_V_7.8	27.03.2018	OK	Tasks to skip by name are set now in SETUP block, not in cursor
 --***EndVersion***
  
 declare @mandant_nr int = 3             -- tasks are copied inside one mandant
 declare @source_gr_name nvarchar(60)    -- name of group from which tasks should be copied
 declare @source_gr_id int				-- id is determinated by source group name
 declare @source_task_ids varchar(max)   -- list of source task id's to copy
-declare @source_task_ids_table table (id int) --id's of tasks for copiyng parsed from sting if @source_task_ids is not null
+declare @source_task_ids_table table (id int) --id's of tasks for copiyng parsed from string if @source_task_ids is not null
 declare @source_block_table table (block_id int) --unique id's of source blocks calculated if @source_task_ids is not null
 declare @source_block_id int  -- current block in the loop
 declare @emergency_gr_font nvarchar(4000)
@@ -35,8 +37,8 @@ declare @emergency_file_template varchar(250) = '<@date@><@mealtime@><@planname@
 declare @emergency_path nvarchar(4000)  = NULL  -- path to store emergency PDFs
 declare @emergency_path2 nvarchar(4000) = NULL  -- additional path to store emergency PDFs
 declare @emergency_path3 nvarchar(4000) = NULL  -- additional path to store emergency PDFs
-declare @block_amount int = NULL --amount of blocks in one group
-declare @block_number int --counter
+declare @block_amount int = NULL				--amount of blocks in one group
+declare @block_number int						--counter
 declare @done_source_blocks table (id int)						-- table for store source blocks which are already copied to emergency group
 declare @done_emergency_tasks table (id int)					-- table for store emergency tasks which have been already created 
 declare @done_emergency_groups table (id int, action_type int)  -- table for store emergency group and blocks which have been already created or will be used for inserting emergency tasks
@@ -44,6 +46,9 @@ declare @done_source_tasks table (id int)						-- table for store source tasks w
 declare @skipped_source_tasks table (id int)					-- table for store source tasks which are skipped because they are inactive or not REP or not automatical or are in the list of tasks which shouldn't be copied
 declare @task_ids_to_skip nvarchar(4000) = NULL
 declare @task_ids_to_skip_table table (id int)
+declare @task_names_to_skip nvarchar(4000) = NULL
+declare @task_names_to_skip_table table (name nvarchar(4000))
+declare @sql nvarchar (max)
 declare @days_in_advance int = 0    --amount of days, tasks will be created with '#date+1', '#date+2' etc
 declare @not_create_for_today int = 0    --if 1 then not create task for today (<@date@>), only for @days_in_advance
 declare @day_number  int            --counter
@@ -68,38 +73,39 @@ declare @parameter_to_change nvarchar(4000) = ''						--parsed out of pair
 declare @parameter_after_change nvarchar(4000) = ''						--parsed out of pair
 declare @parameters_table table (par nvarchar(4000), id int identity)	--parsed out of pair
 declare @par nvarchar(4000) 
---
+
 declare @intelli_date  bit = 0	-- if 1 then parameter 'date' would be updated to 'date=<@date@>' or 'date=<@date+1@>' or 'date=<@date+2@>' etc. accordingly to task name
 
 
 
----------------------------------------------------------------------------------------------------------------------------
----------------------------------Block for setting source and expected name for emergency group----------------------------
+------------------------------------------------- SETUP -------------------------------------------------------------------
+---------------------------------Block for setting source and expected name for emergency group, other parameters----------
 ---------------------------------------------------------------------------------------------------------------------------
 
 ---- please use ONE parameter: set name of source group OR source task id's, @source_task_ids have bigger priority --------
 
-set @source_gr_name = 'notfall_test'       -- 'ATS' --'Produktion'
+set @source_gr_name = 'notfall_test'				-- 'ATS' --'Produktion'
                --OR--
-set @source_task_ids = '54,30,25,31'        --'54,56,78' '54,30,25,31'     
+set @source_task_ids = '54,56,78,284,178'        --'54,56,78' --'54,30,25,31'     
 
 ---- general parameters --------------------------------
 set @mandant_nr = 3 
-set @emergency_gr_name = 'Système d''urgence'           --'Notfall'  --'Système d''urgence' 
+set @emergency_gr_name = 'notfall'						--'Notfall'  --'Système d''urgence' 
 set @emergency_pc_id = 'notfall'						--'notfall'  --'secour'
 ---- additional parameters --------------------------------
-set @days_in_advance = 0				 --amount of days, tasks will be created with '#date+1', '#date+2' etc
-set @not_create_for_today = 1			 --if 1 then not create task for today (<@date@>), only for @days_in_advance
---set @block_amount = 1					 --set amount of blocks here if you want copy not all blocks (for example, first 3: Breakfast/Lunch/Dinner) 
---set @task_ids_to_skip = '4313, 4309'	 --set here id's of tasks which shouldn't be copied, delimiter is comma sign. Use WHERE in cursor to skip tasks by filter [name like '%%']
-set @emergency_file_template = '<@date@>_<@taskname@>_notfall'    --'<@date@>_<@taskname@>_notfall'   --'<@date@>_<@taskname@>_secour'
-set @emergency_path = 'D:\Logimen\Emergency'					  --'D:\Logimen\Emergency'
+set @days_in_advance = 1												--amount of days, tasks will be created with '#date+1', '#date+2' etc
+set @not_create_for_today = 0											--if 1 then not create task for today (<@date@>), only for @days_in_advance
+--set @block_amount = 1													--set amount of blocks here if you want copy not all blocks (for example, first 3: Breakfast/Lunch/Dinner) 
+--set @task_ids_to_skip = '20'											--set here id's of tasks which shouldn't be copied, delimiter is comma sign. 
+--set @task_names_to_skip = '%diff%'		  --'%diff%, notes%'	    --set here names of tasks which shouldn't be copied, delimiter is comma sign. Use % in names 
+set @emergency_file_template = '<@date@>_<@taskname@>_notfall'			--'<@date@>_<@taskname@>_notfall'   --'<@date@>_<@taskname@>_secour'
+set @emergency_path = 'D:\Logimen\Emergency'							--'D:\Logimen\Emergency'
 set @emergency_path2 = NULL 
 set @emergency_path3 = NULL
-set @debug_mode = 1						 --if 1 then all inserted tasks and groups will be deleted
-set @create_PDFKiller = 0				 --if 1 then insert PDF Killer task in separate block
+set @debug_mode = 1										--if 1 then all inserted tasks and groups will be deleted
+set @create_PDFKiller = 0								--if 1 then insert PDF Killer task in separate block
 			
-set @add_parameters = 1                  --if 1 then check and add @parameters_to_add to emergency tasks if it is absent
+set @add_parameters = 1									--if 1 then check and add @parameters_to_add to emergency tasks if it is absent
 ---- if @add_parameters = 1 --------------------------------
 	set @parameters_to_add = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>' 
 
@@ -126,10 +132,40 @@ set @update_parameters = 1
 
 
 
+
+
 ------------------------ INSERT -------------------------------------------------------------------------------------------
 
---parsing task id's to be skipped from the list to table @task_ids_to_skip_table
-insert into @task_ids_to_skip_table select RTRIM(LTRIM(item)) from SplitStrings_CTE((select @task_ids_to_skip), ',')
+----skipping block---------------------------------------------------------------------------------------------------------
+	--parsing task id's to be skipped from the list to table @task_ids_to_skip_table
+	insert into @task_ids_to_skip_table select RTRIM(LTRIM(item)) from SplitStrings_CTE((select @task_ids_to_skip), ',')
+
+	--parsing task names to be skipped from the list to table @task_names_to_skip_table
+	insert into @task_names_to_skip_table select RTRIM(LTRIM(item)) from SplitStrings_CTE((select @task_names_to_skip), ',')
+
+	set @sql = ''
+	declare @name nvarchar (4000)
+
+	DECLARE name_to_skip CURSOR FOR
+	SELECT name FROM @task_names_to_skip_table
+
+	OPEN name_to_skip 
+	FETCH NEXT FROM name_to_skip INTO @name
+	WHILE @@FETCH_STATUS=0
+	BEGIN
+		if @sql = '' 
+			set @sql = 'select task_id from KK_LM_Task where name like ''' + @name + ''''
+		else
+			set @sql = @sql + ' or name like ''' + @name + ''''
+	
+		FETCH NEXT FROM name_to_skip INTO @name
+	END
+	CLOSE name_to_skip
+	DEALLOCATE name_to_skip
+
+	insert into @task_ids_to_skip_table
+	exec sp_executesql @sql
+---end of skipping block---------------------------------------------------------------------------------------------------
 
 IF @source_task_ids = '' set @source_task_ids = null
 IF @source_task_ids is not null 
@@ -138,22 +174,16 @@ IF @source_task_ids is not null
 		insert into @source_task_ids_table select RTRIM(LTRIM(item)) from SplitStrings_CTE((select @source_task_ids), ',')
 		
 		insert into @source_block_table select distinct task_group_id from kk_lm_task where task_id in (select id from @source_task_ids_table)
-
-		if (select count (distinct parent_id) from KK_LM_TaskGroup where gr_id in (select block_id from @source_block_table)) > 1 
+				
+		if (select count (distinct parent_id) from KK_LM_TaskGroup where gr_id in (select block_id from @source_block_table)) = 0 
 			begin
-				select ('Source tasks should be from the same source group, check @source_task_ids = ' + @source_task_ids) as Error
+				select ('There are no source tasks with such ids, check @source_task_ids = ' + @source_task_ids) as Error
 				set @error=1 
 				GOTO end_label
 			end
-		else 
-			if (select count (distinct parent_id) from KK_LM_TaskGroup where gr_id in (select block_id from @source_block_table)) = 0 
-				begin
-					select ('There are no source tasks with such ids, check @source_task_ids = ' + @source_task_ids) as Error
-					set @error=1 
-					GOTO end_label
-				end
-			else
-				set @source_gr_id = (select top 1 parent_id from KK_LM_TaskGroup where gr_id in (select block_id from @source_block_table))
+		else
+			set @source_gr_id = (select top 1 gr_id  from KK_LM_TaskGroup where gr_id in (select parent_id from KK_LM_TaskGroup where gr_id in (select block_id from @source_block_table)) order by gr_pos)
+			
 	END
 ELSE
 	BEGIN
@@ -209,7 +239,7 @@ if @source_task_ids is null
 				end
 	end
 else
-	set @block_amount = (select count (gr_id) from KK_LM_TaskGroup where parent_id=@source_gr_id and gr_id in (select block_id from @source_block_table)) --***-- only blocks from this group
+	set @block_amount = (select count (gr_id) from KK_LM_TaskGroup where /*parent_id=@source_gr_id and*/ gr_id in (select block_id from @source_block_table)) --not only blocks from this group but from all groups
 	
 
 --loop for inserting emergency blocks
@@ -219,7 +249,13 @@ BEGIN
 	if @source_task_ids is null 
 		set @source_block_id = (select top 1 gr_id from KK_LM_TaskGroup where parent_id=@source_gr_id and gr_id not in (select id from @done_source_blocks) order by gr_pos) 
 	else		
-		set @source_block_id = (select top 1 gr_id from KK_LM_TaskGroup where parent_id=@source_gr_id and gr_id not in (select id from @done_source_blocks) and gr_id in (select block_id from @source_block_table) order by gr_pos) 
+		set @source_block_id = (select top 1 block.gr_id from KK_LM_TaskGroup block 
+								inner join KK_LM_TaskGroup par on block.parent_id = par.gr_id
+								where 
+								block.gr_id in (select block_id from @source_block_table) 
+								and block.gr_id not in (select id from @done_source_blocks) 
+								order by par.gr_pos, block.gr_pos)
+	
 		
 	set @emergency_block_name = (select name from KK_LM_TaskGroup where gr_id=@source_block_id)
 	set @emergency_block_font = (select font from KK_LM_TaskGroup where gr_id=@source_block_id)
@@ -239,7 +275,8 @@ BEGIN
 	else --use existing emergency block 
 		begin
 			set @emergency_block_id = (select gr_id from KK_LM_TaskGroup where name = @emergency_block_name and parent_id = @emergency_gr_id)
-			select 'Block ''' + @emergency_block_name + ''' exists already, tasks will be inserted in existing block' as Notice
+			if (select count (*) from KK_LM_Task where task_group_id = @emergency_block_id and  task_id in (select * from @done_emergency_tasks)) = 0
+				select 'Block ''' + @emergency_block_name + ''' exists already, tasks will be inserted in existing block' as Notice
 			insert into @done_emergency_groups (id, action_type) select @emergency_block_id, 2
 		end
 	
@@ -287,13 +324,12 @@ BEGIN
         FROM KK_LM_Task
         WHERE task_group_id=@source_block_id and active=1 and [type]='REP' and (period='D' or period='H') --only active daily or manual tasks, type report
         and task_id not in (select * from @task_ids_to_skip_table)
-        --and name not like '%band%'
         ORDER BY pos
 	else
 		DECLARE task_insert CURSOR FOR
 		SELECT task_id, task_group_id, name, [type], period, schedule, [time], pc_ids, body, parameter1, value1, active, font, text_color, workdir, pos, show_message
 		FROM KK_LM_Task
-		WHERE (task_group_id=@source_block_id and task_id in (select id from @source_task_ids_table))  --only tasks which there are in the list 
+		WHERE (task_group_id=@source_block_id and task_id in (select id from @source_task_ids_table) and [type]='REP')   --only REP tasks which there are in the list 
 		ORDER BY pos
 	
 	OPEN task_insert
@@ -354,6 +390,9 @@ BEGIN
 
 	if @source_task_ids is null
 		insert into @skipped_source_tasks (id) select task_id from KK_LM_Task where task_group_id=@source_block_id and task_id not in (select * from @done_source_tasks) --all tasks which not in cursor
+	else
+		insert into @skipped_source_tasks (id) select task_id from KK_LM_Task where task_group_id=@source_block_id and task_id in (select id from @source_task_ids_table) and task_id not in (select * from @done_source_tasks) --all tasks which not in cursor
+
 
 	insert into @done_source_blocks (id) select @source_block_id
 
@@ -581,17 +620,26 @@ if (select count (id) from @done_emergency_groups) > 0
 	union all
 	select 'inserted emergency block'  as ' ', * from KK_LM_TaskGroup where  gr_id in (select id from  @done_emergency_groups where action_type=1) and parent_id is not null 
 	union all
-	select 'used emergency group'  as ' ', * from KK_LM_TaskGroup where gr_id in (select id from  @done_emergency_groups where action_type=2) 
-	order by gr_id
+	select 'used emergency group'  as ' ', * from KK_LM_TaskGroup where gr_id in (select id from  @done_emergency_groups where action_type=2)  and  parent_id is null
+	union all
+	select 'used emergency block'  as ' ', * from KK_LM_TaskGroup where gr_id in (select id from  @done_emergency_groups where action_type=2) and parent_id is not null 
+																	and gr_id not in (select id from  @done_emergency_groups where action_type=1) --to hide blocks which are already in the list of inserted blocks
+	order by parent_id, gr_pos
 
 --select of inserted emergency tasks
 if (select count (*) from @done_emergency_tasks) > 0
-	select 'inserted emergency task'  as ' ', * from KK_LM_Task where task_id in (select * from @done_emergency_tasks)
+	select 'inserted emergency task'  as ' ', t.* from KK_LM_Task t
+	left join KK_LM_TaskGroup gr on t.task_group_id = gr.gr_id
+	where t.task_id in (select * from @done_emergency_tasks) 
+	order by gr.gr_pos, t.pos
 else if @error = 2 select 'No inserted emergency tasks' as 'Error'
 
 --select of skipped source tasks
 if (select count (*) from @skipped_source_tasks) > 0
-	select 'skipped source task'  as ' ', * from KK_LM_Task where task_id in (select * from @skipped_source_tasks) 
+	select 'skipped source task'  as ' ', t.* from KK_LM_Task t
+	left join KK_LM_TaskGroup gr on t.task_group_id = gr.gr_id
+	where t.task_id in (select * from @skipped_source_tasks) 
+	order by gr.gr_pos, t.pos
 else if @error != NULL select 'No skipped source tasks' as ' '
 
 
@@ -613,6 +661,5 @@ if @debug_mode = 1
 
 --delete from KK_LM_Task where task_id >= 
 --delete from KK_LM_TaskGroup where gr_id >= 
-
 
 
