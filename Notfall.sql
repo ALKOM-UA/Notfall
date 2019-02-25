@@ -13,15 +13,17 @@
 --_V_7.6	23.02.2018	OK	Fixed absent '/' in the beginning of kk_lm_task.parameter1, changed update block for @parameter_to_change without sign '=', logic with @days_in_advance starts with 0 value
 --_V_7.7	28.02.2018	OK	Tasks from different groups can be added by using @source_task_ids, not only from one. Logs are changed to select tasks in the same seuence with LMv7
 --_V_7.8	27.03.2018	OK	Tasks to skip by name are set now in SETUP block, not in cursor
+--_V_7.9	28.03.2018	OK	Added possibility to insert all tasks in one emergency block
+--_V_7.10	03.04.2018	OK	Added parameter @save_mode to backup, data from tables KK_LM_Task and KK_LM_TaskGroup is copied to KK_LM_Task_<current_date> and KK_LM_TaskGroup_<current_date>
 --***EndVersion***
  
-declare @mandant_nr int = 3             -- tasks are copied inside one mandant
-declare @source_gr_name nvarchar(60)    -- name of group from which tasks should be copied
-declare @source_gr_id int				-- id is determinated by source group name
-declare @source_task_ids varchar(max)   -- list of source task id's to copy
-declare @source_task_ids_table table (id int) --id's of tasks for copiyng parsed from string if @source_task_ids is not null
-declare @source_block_table table (block_id int) --unique id's of source blocks calculated if @source_task_ids is not null
-declare @source_block_id int  -- current block in the loop
+declare @mandant_nr int = 3					     -- tasks are copied inside one mandant
+declare @source_gr_name nvarchar(60)		     -- name of group from which tasks should be copied
+declare @source_gr_id int						 -- id is determinated by source group name
+declare @source_task_ids varchar(max)			 -- list of source task id's to copy
+declare @source_task_ids_table table (id int)    -- id's of tasks for copiyng parsed from string if @source_task_ids is not null
+declare @source_block_table table (block_id int) -- unique id's of source blocks calculated if @source_task_ids is not null
+declare @source_block_id int                     -- current block in the loop
 declare @emergency_gr_font nvarchar(4000)
 declare @emergency_gr_color int
 declare @emergency_gr_name nvarchar(60) = 'Notfall'
@@ -37,8 +39,9 @@ declare @emergency_file_template varchar(250) = '<@date@><@mealtime@><@planname@
 declare @emergency_path nvarchar(4000)  = NULL  -- path to store emergency PDFs
 declare @emergency_path2 nvarchar(4000) = NULL  -- additional path to store emergency PDFs
 declare @emergency_path3 nvarchar(4000) = NULL  -- additional path to store emergency PDFs
-declare @block_amount int = NULL				--amount of blocks in one group
-declare @block_number int						--counter
+declare @block_amount int = NULL				-- amount of blocks in one group
+declare @block_number int						-- counter
+declare @do_not_use_source_blocks  bit = 0
 declare @done_source_blocks table (id int)						-- table for store source blocks which are already copied to emergency group
 declare @done_emergency_tasks table (id int)					-- table for store emergency tasks which have been already created 
 declare @done_emergency_groups table (id int, action_type int)  -- table for store emergency group and blocks which have been already created or will be used for inserting emergency tasks
@@ -48,34 +51,35 @@ declare @task_ids_to_skip nvarchar(4000) = NULL
 declare @task_ids_to_skip_table table (id int)
 declare @task_names_to_skip nvarchar(4000) = NULL
 declare @task_names_to_skip_table table (name nvarchar(4000))
-declare @sql nvarchar (max)
-declare @days_in_advance int = 0    --amount of days, tasks will be created with '#date+1', '#date+2' etc
-declare @not_create_for_today int = 0    --if 1 then not create task for today (<@date@>), only for @days_in_advance
-declare @day_number  int            --counter
-declare @add_parameters bit = 0     --if 1 then check and add @parameters_to_add to emergency tasks if it is absent
+declare @sql nvarchar (max) = ''
+declare @days_in_advance int = 0         -- amount of days, tasks will be created with '#date+1', '#date+2' etc
+declare @not_create_for_today int = 0    -- if 1 then not create task for today (<@date@>), only for @days_in_advance
+declare @day_number  int                 -- counter
+declare @add_parameters bit = 0          -- if 1 then check and add @parameters_to_add to emergency tasks if it is absent
 declare @parameters_to_add nvarchar(4000) = '/daily_mode=0 /future_mode=1 /lastAnfoRun=<@Standardwerte@> /newMealStatus=<@Standardwerte@>'
-declare @update_parameters bit = 0  --if 1 then update parameters of task kk_lm_task.parameter1
-declare @change_time bit = 0		--if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time
-declare @initial_time time(0)		--time from which all tasks should be started or time of last start of tasks
-declare @tasks_interval int = 5		--interval between emergency tasks
-declare @reverse_time_direction bit = 0 -- if 0 then @initial_time is time of start first task else @initial_time is time of start last task
+declare @update_parameters bit = 0       -- if 1 then update parameters of task kk_lm_task.parameter1
+declare @change_time bit = 0		     -- if 1 then time for all tasks will be set with @tasks_interval from or to @initial_time
+declare @initial_time time(0)		     -- time from which all tasks should be started or time of last start of tasks
+declare @tasks_interval int = 5		     -- interval between emergency tasks
+declare @reverse_time_direction bit = 0  -- if 0 then @initial_time is time of start first task else @initial_time is time of start last task
 declare @time_to_set time(0) = NULL
-declare @task_id   int
-declare @error int = 0					--type of error
-declare @create_PDFKiller bit = 0		--if 1 then insert PDF Killer task in separate block
-declare @debug_mode bit = 0				--if 1 then all inserted tasks and groups will be deleted
+declare @task_id   int 
+declare @error int = 0					 -- type of error
+declare @create_PDFKiller bit = 0		 -- if 1 then insert PDF Killer task in separate block
+declare @debug_mode bit = 0				 -- if 1 then all inserted tasks and groups will be deleted
+declare @save_mode bit = 0				 -- if 1 then data from tables KK_LM_Task and KK_LM_TaskGroup is copied to KK_LM_Task_<current_date> and KK_LM_TaskGroup_<current_date>
+declare @table_name varchar (max)
 		
-declare @Parameter1 nvarchar(4000) = ''									--parameters of task after updating and concatenation
-declare @Parameters table (item nvarchar(4000))							--table for parsed parameters from kk_LM_Task.parameter1
-declare @parameters_list nvarchar(4000) = NULL							--list of parameters, what to change and parameter after change
-declare @parameter_pairs_table table (parameter_pair nvarchar(4000))	--list of parameters, parsed by pairs
-declare @parameter_to_change nvarchar(4000) = ''						--parsed out of pair
-declare @parameter_after_change nvarchar(4000) = ''						--parsed out of pair
-declare @parameters_table table (par nvarchar(4000), id int identity)	--parsed out of pair
+declare @Parameter1 nvarchar(4000) = ''									-- parameters of task after updating and concatenation
+declare @Parameters table (item nvarchar(4000))							-- table for parsed parameters from kk_LM_Task.parameter1
+declare @parameters_list nvarchar(4000) = NULL							-- list of parameters, what to change and parameter after change
+declare @parameter_pairs_table table (parameter_pair nvarchar(4000))	-- list of parameters, parsed by pairs
+declare @parameter_to_change nvarchar(4000) = ''						-- parsed out of pair
+declare @parameter_after_change nvarchar(4000) = ''						-- parsed out of pair
+declare @parameters_table table (par nvarchar(4000), id int identity)	-- parsed out of pair
 declare @par nvarchar(4000) 
 
 declare @intelli_date  bit = 0	-- if 1 then parameter 'date' would be updated to 'date=<@date@>' or 'date=<@date+1@>' or 'date=<@date+2@>' etc. accordingly to task name
-
 
 
 ------------------------------------------------- SETUP -------------------------------------------------------------------
@@ -90,11 +94,12 @@ set @source_task_ids = '54,56,78,284,178'        --'54,56,78' --'54,30,25,31'
 
 ---- general parameters --------------------------------
 set @mandant_nr = 3 
-set @emergency_gr_name = 'notfall'						--'Notfall'  --'Système d''urgence' 
+set @emergency_gr_name = 'notfall'						--'Notfall'  --'Systeme d''urgence' 
 set @emergency_pc_id = 'notfall'						--'notfall'  --'secour'
 ---- additional parameters --------------------------------
 set @days_in_advance = 1												--amount of days, tasks will be created with '#date+1', '#date+2' etc
 set @not_create_for_today = 0											--if 1 then not create task for today (<@date@>), only for @days_in_advance
+set @do_not_use_source_blocks = 0										--if 1 then all tasks will be inserted in one emergency block
 --set @block_amount = 1													--set amount of blocks here if you want copy not all blocks (for example, first 3: Breakfast/Lunch/Dinner) 
 --set @task_ids_to_skip = '20'											--set here id's of tasks which shouldn't be copied, delimiter is comma sign. 
 --set @task_names_to_skip = '%diff%'		  --'%diff%, notes%'	    --set here names of tasks which shouldn't be copied, delimiter is comma sign. Use % in names 
@@ -103,6 +108,7 @@ set @emergency_path = 'D:\Logimen\Emergency'							--'D:\Logimen\Emergency'
 set @emergency_path2 = NULL 
 set @emergency_path3 = NULL
 set @debug_mode = 1										--if 1 then all inserted tasks and groups will be deleted
+set @save_mode = 1										--if 1 then data from tables KK_LM_Task and KK_LM_TaskGroup is copied to KK_LM_Task_<current_date> and KK_LM_TaskGroup_<current_date>
 set @create_PDFKiller = 0								--if 1 then insert PDF Killer task in separate block
 			
 set @add_parameters = 1									--if 1 then check and add @parameters_to_add to emergency tasks if it is absent
@@ -116,7 +122,7 @@ set @change_time = 0					 --if 1 then time for all tasks will be set with @tasks
 	set @reverse_time_direction = 0      --if 0 then @initial_time is time of start first task else @initial_time is time of start last task
 
 set @update_parameters = 1 
----- if @@update_parameters = 1 --------------------------------
+---- if @update_parameters = 1 --------------------------------
 
 	--set 'parameter to change | parameter after change', use ; as separator between pairs
 	--if parameter to change is like 'mz' and do not have definite value, like 'mz=3' etc., will be changed all items like 'mz%' 
@@ -130,8 +136,30 @@ set @update_parameters = 1
 ---------------------------------------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------------------------------
 
+--log
+select 'Last task before script executing' as ' ',  (select  top 1 task_id from KK_LM_Task order by task_id desc) as id
+union all
+select 'Last task group before script executing',  (select top 1 gr_id from KK_LM_TaskGroup order by gr_id desc)
 
+--backup block
+	
+set @table_name = ('KK_LM_Task_' + (select convert(varchar(10), getdate(),112)))
 
+if @save_mode = 1  and (select table_name from information_schema.tables where table_type = 'base table' and  table_name = @table_name)  is null
+	begin
+		set @sql = 'SELECT * INTO KK_LM_Task_'+ (SELECT CONVERT(VARCHAR(10), getdate(),112))+' from KK_LM_Task'
+		exec (@sql)
+		select 'Data from table KK_LM_Task is backuped to table KK_LM_Task_'+ (SELECT CONVERT(VARCHAR(10), getdate(),112)) as ' '
+	end
+
+set @table_name = ('KK_LM_TaskGroup_' + (select convert(varchar(10), getdate(),112)))
+	
+if @save_mode = 1  and (select table_name from information_schema.tables where table_type = 'base table' and  table_name = @table_name)  is null
+	begin
+		set @sql = 'SELECT * INTO KK_LM_TaskGroup_'+ (SELECT CONVERT(VARCHAR(10), getdate(),112))+' from KK_LM_TaskGroup'
+		exec (@sql)
+		select 'Data from table KK_LM_TaskGroup is backuped to table KK_LM_TaskGroup_'+ (SELECT CONVERT(VARCHAR(10), getdate(),112)) as ' '
+	end
 
 
 ------------------------ INSERT -------------------------------------------------------------------------------------------
@@ -223,7 +251,6 @@ else
 		set @emergency_gr_id = (select top 1 gr_id from KK_LM_TaskGroup where mandant_nr=@mandant_nr and name = @emergency_gr_name and parent_id is null order by gr_pos desc)
 		select 'Group ''' + @emergency_gr_name + ''' exists already, blocks will be inserted in existing group' as Notice
 		insert into @done_emergency_groups (id, action_type) select @emergency_gr_id, 2
-
 	end
 
 --calculating of emergency blocks amount inside this group, in case if amount is not set manually
@@ -256,14 +283,12 @@ BEGIN
 								and block.gr_id not in (select id from @done_source_blocks) 
 								order by par.gr_pos, block.gr_pos)
 	
-		
-	set @emergency_block_name = (select name from KK_LM_TaskGroup where gr_id=@source_block_id)
-	set @emergency_block_font = (select font from KK_LM_TaskGroup where gr_id=@source_block_id)
-	set @emergency_block_color = (select text_color from KK_LM_TaskGroup where gr_id=@source_block_id)
-	set @emergency_block_pos = (coalesce((select max (gr_pos) from KK_LM_TaskGroup where parent_id=@emergency_gr_id),-1)+1)
-		
-		
-	
+	if @do_not_use_source_blocks = 0 or @emergency_block_id is null
+		set @emergency_block_name = (select name from KK_LM_TaskGroup where gr_id=@source_block_id)
+		set @emergency_block_font = (select font from KK_LM_TaskGroup where gr_id=@source_block_id)
+		set @emergency_block_color = (select text_color from KK_LM_TaskGroup where gr_id=@source_block_id)
+		set @emergency_block_pos = (coalesce((select max (gr_pos) from KK_LM_TaskGroup where parent_id=@emergency_gr_id),-1)+1)
+			
 	if not exists (select * from KK_LM_TaskGroup where name = @emergency_block_name and parent_id = @emergency_gr_id) --inserting of emergency block if not exists
 		begin
 			INSERT INTO KK_LM_TaskGroup (mandant_nr, name, parent_id, font, img_name, text_color, gr_pos)
@@ -272,7 +297,7 @@ BEGIN
 			set @emergency_block_id = SCOPE_IDENTITY()
 			insert into @done_emergency_groups (id, action_type) select @emergency_block_id, 1
 		end	
-	else --use existing emergency block 
+	else if @do_not_use_source_blocks = 0--use existing emergency block 
 		begin
 			set @emergency_block_id = (select gr_id from KK_LM_TaskGroup where name = @emergency_block_name and parent_id = @emergency_gr_id)
 			if (select count (*) from KK_LM_Task where task_group_id = @emergency_block_id and  task_id in (select * from @done_emergency_tasks)) = 0
@@ -283,9 +308,9 @@ BEGIN
 	-- add path to notfall folder and template name	if not exists
 	if not exists (select * from LMPara where gruppe = @emergency_block_id and schluessel = 'emergency_file_template')
 		begin
-			SET  @emergency_path = (select CASE WHEN RIGHT(RTRIM(@emergency_path),1) = '\' THEN  RTRIM(@emergency_path) ELSE RTRIM(@emergency_path) + '\' END)
-			SET  @emergency_path2 = (select CASE WHEN RIGHT(RTRIM(@emergency_path2),1) = '\' THEN  RTRIM(@emergency_path2) ELSE RTRIM(@emergency_path2) + '\' END)
-			SET  @emergency_path3 = (select CASE WHEN RIGHT(RTRIM(@emergency_path3),1) = '\' THEN  RTRIM(@emergency_path3) ELSE RTRIM(@emergency_path3) + '\' END)
+			SET @emergency_path  = (select CASE WHEN RIGHT(RTRIM(@emergency_path),1)  = '\' THEN  RTRIM(@emergency_path)  ELSE RTRIM(@emergency_path)  + '\' END)
+			SET @emergency_path2 = (select CASE WHEN RIGHT(RTRIM(@emergency_path2),1) = '\' THEN  RTRIM(@emergency_path2) ELSE RTRIM(@emergency_path2) + '\' END)
+			SET @emergency_path3 = (select CASE WHEN RIGHT(RTRIM(@emergency_path3),1) = '\' THEN  RTRIM(@emergency_path3) ELSE RTRIM(@emergency_path3) + '\' END)
 
 			INSERT INTO LMPara (mandant, gruppe, schluessel, Wert, application) VALUES (0,@emergency_block_id, 'emergency_file_template', @emergency_file_template, 'ATS')
 			INSERT INTO LMPara (mandant, gruppe, schluessel, Wert, application) VALUES (0,@emergency_block_id, 'emergency_path', LEFT(@emergency_path, LEN(@emergency_path) - CHARINDEX('\', REVERSE(@emergency_path))) + '\' + CONVERT(nvarchar(2), @block_number) + ' ' + @emergency_block_name, 'ATS')
@@ -338,7 +363,8 @@ BEGIN
 	BEGIN
 		if @not_create_for_today = 1 
 			set @day_number = 1
-		else set @day_number = 0
+		else 
+			set @day_number = 0
 
 		WHILE @day_number <= @days_in_advance
 		BEGIN 
@@ -396,7 +422,7 @@ BEGIN
 
 	insert into @done_source_blocks (id) select @source_block_id
 
-	if (select count (*)  from KK_LM_Task where task_group_id = @emergency_block_id and task_id in (select * from @done_emergency_tasks)) = 0
+	if (select count (*)  from KK_LM_Task where task_group_id = @emergency_block_id and task_id in (select * from @done_emergency_tasks)) = 0 and @do_not_use_source_blocks = 0
 	select 'No tasks were inserted in block ''' + @emergency_block_name + ''''  as 'Warning'
 
 	set @block_number=@block_number+1
@@ -413,7 +439,8 @@ if @create_PDFKiller = 1
 					set @emergency_block_id = SCOPE_IDENTITY()
 					insert into @done_emergency_groups (id, action_type) select @emergency_block_id, 1
 		
-					INSERT INTO kk_lm_task (task_group_id,
+					INSERT INTO kk_lm_task 
+								(task_group_id,
 								 name,
 								 [type],
 								 period,
@@ -429,7 +456,7 @@ if @create_PDFKiller = 1
 								 show_message)
 								VALUES      
 								(@emergency_block_id,
-								'PDF Killer',
+								 'PDF Killer',
 								 'EXE',
 								 'D',
 								 '11111111',
@@ -598,7 +625,8 @@ IF @update_parameters = 1 or @change_time = 1 or @add_parameters = 1
 
 ------------------------- END_LABEL ---------------------------------------------------------------------------
 
-end_label:
+END_LABEL:
+
 if @error = 1
 	select 'There is an error, no groups and tasks were created'  as Result
 else 
